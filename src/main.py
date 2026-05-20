@@ -17,9 +17,11 @@ from src.instagram import (
     fetch_insights,
     fetch_media,
 )
-from src.models import IGInsights, IGMedia, NotionRow
+from src.models import IGInsights, IGMedia, NotionRow, UpsertIntent
 from src.notion import (
     NotionAPIError,
+    apply_upsert,
+    build_upsert,
     extract_row,
     normalize_permalink,
     query_data_source,
@@ -168,8 +170,138 @@ def main() -> int:
     _print_match_diff(media, rows)
     print()
 
-    print("Phase 5 complete. Phase 6 will do dry-run upsert.")
-    return 0
+    # ─── 6. Build upsert intents (insights for ALL media) ─────────────
+    print(f"→ Fetching insights for all {len(media)} posts...")
+    by_ig_id: dict[str, NotionRow] = {r.ig_media_id: r for r in rows if r.ig_media_id}
+    by_link: dict[str, NotionRow] = {}
+    for r in rows:
+        norm = normalize_permalink(r.permalink)
+        if norm:
+            by_link[norm] = r
+
+    intents: list[UpsertIntent] = []
+    insights_unavailable_count = 0
+    insights_errors: list[str] = []
+
+    for i, m in enumerate(media, start=1):
+        # 1. Find existing row (id, fallback permalink)
+        existing: NotionRow | None = by_ig_id.get(m.id)
+        if existing is None:
+            norm = normalize_permalink(m.permalink)
+            if norm:
+                existing = by_link.get(norm)
+
+        # 2. Fetch insights (or note unavailable)
+        try:
+            insights = fetch_insights(settings, m)
+        except InsightsUnavailableError:
+            insights = None
+            insights_unavailable_count += 1
+        except InstagramAPIError as e:
+            insights_errors.append(f"{m.short_permalink}: {e}")
+            insights = None
+
+        # 3. Build intent
+        intents.append(build_upsert(m, insights, existing))
+
+    print(
+        f"✓ Computed {len(intents)} intents  "
+        f"(insights skipped: {insights_unavailable_count}, "
+        f"errors: {len(insights_errors)})"
+    )
+    for err in insights_errors:
+        print(f"  ⚠ {err}", file=sys.stderr)
+    print()
+
+    _print_dry_run(intents, settings.DRY_RUN)
+    print()
+
+    # ─── 7. Apply (gated by DRY_RUN) ─────────────────────────────────
+    if settings.DRY_RUN:
+        print("→ DRY_RUN=true — no writes will be performed.")
+        print()
+        print("Phase 6 complete. Set DRY_RUN=false (and add a write cap) for Phase 7.")
+        return 0
+
+    # Real writes (Phase 7+)
+    print("→ Applying upserts to Notion...")
+    written = errored = 0
+    for intent in intents:
+        try:
+            apply_upsert(settings, intent)
+            written += 1
+        except NotionAPIError as e:
+            errored += 1
+            print(f"  ✖ {intent.short_permalink}: {e}", file=sys.stderr)
+    print(f"✓ Wrote {written}, errors {errored}")
+    return 0 if errored == 0 else 1
+
+
+def _print_dry_run(intents: list[UpsertIntent], dry_run: bool) -> None:
+    label = "DRY-RUN" if dry_run else "LIVE"
+    print(f"  ─── Upsert plan ({label}) ─────────────────────────────────────────────")
+
+    summary: Counter[str] = Counter()
+    note_counter: Counter[str] = Counter()
+    for intent in intents:
+        summary[intent.action] += 1
+        for n in intent.notes:
+            note_counter[n] += 1
+
+    header = (
+        f"  {'#':>3}  {'Action':<6}  {'Permalink':<30}  "
+        f"{'Props':>5}  Notes"
+    )
+    print(header)
+    print("  " + "─" * (len(header) - 2))
+    for i, intent in enumerate(intents, start=1):
+        notes_str = "; ".join(intent.notes) if intent.notes else ""
+        print(
+            f"  {i:>3}  {intent.action:<6}  "
+            f"{intent.short_permalink:<30}  "
+            f"{len(intent.properties):>5}  {notes_str}"
+        )
+
+    print()
+    print("  Summary:")
+    for action, c in summary.most_common():
+        print(f"    {action:<6}  {c}")
+    if note_counter:
+        print()
+        print("  Conditional decisions:")
+        for note, c in note_counter.most_common():
+            print(f"    {c:>3}  {note}")
+
+    # Verbose view of the first UPDATE and the first CREATE for sanity-check
+    first_update = next((it for it in intents if it.action == "UPDATE"), None)
+    first_create = next((it for it in intents if it.action == "CREATE"), None)
+    for intent in [it for it in (first_update, first_create) if it is not None]:
+        print()
+        print(f"  ─── Verbose: first {intent.action} ({intent.short_permalink}) ───")
+        for key, payload in intent.properties.items():
+            preview = _preview_property(payload)
+            print(f"    {key:<24} = {preview}")
+
+
+def _preview_property(payload: dict) -> str:
+    """Render a Notion property payload as a short readable string for logs."""
+    if "title" in payload:
+        return repr("".join(t["text"]["content"] for t in payload["title"]))
+    if "rich_text" in payload:
+        text = "".join(t["text"]["content"] for t in payload["rich_text"])
+        return repr(text if len(text) <= 60 else text[:57] + "…")
+    if "url" in payload:
+        url = payload["url"] or ""
+        return repr(url if len(url) <= 80 else url[:77] + "…")
+    if "date" in payload:
+        return payload["date"]["start"]
+    if "number" in payload:
+        return str(payload["number"])
+    if "select" in payload:
+        return f"select:{payload['select']['name']}"
+    if "status" in payload:
+        return f"status:{payload['status']['name']}"
+    return repr(payload)
 
 
 def _print_match_diff(media: list[IGMedia], rows: list[NotionRow]) -> None:

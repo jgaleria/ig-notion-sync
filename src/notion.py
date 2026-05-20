@@ -1,19 +1,21 @@
 """Notion API client + upsert logic.
 
 Phase 5 — data source query and row extraction for matching.
-Phase 6 will implement the upsert with the spec's field-write rules,
-gated by Settings.DRY_RUN.
+Phase 6 — build_upsert() (pure intent computation) + apply_upsert()
+(side-effecting write, gated by Settings.DRY_RUN).
 """
 
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from src.config import Settings
-from src.models import NotionRow
+from src.models import IGInsights, IGMedia, NotionRow, UpsertIntent
 
 
 HTTP_TIMEOUT = 30.0
@@ -189,3 +191,187 @@ def normalize_permalink(url: str | None) -> str | None:
     if not host:
         return None
     return f"{host}{path}"
+
+
+# ─── Property serializers ─────────────────────────────────────────────
+# Notion expects a specific JSON shape for each property type. These helpers
+# centralize that so build_upsert reads as a plain field map.
+
+
+def _title(text: str) -> dict[str, Any]:
+    return {"title": [{"type": "text", "text": {"content": text or ""}}]}
+
+
+def _rich_text(text: str) -> dict[str, Any]:
+    return {"rich_text": [{"type": "text", "text": {"content": text or ""}}]}
+
+
+def _url(url: str | None) -> dict[str, Any]:
+    return {"url": url or None}
+
+
+def _date_iso(iso: str) -> dict[str, Any]:
+    return {"date": {"start": iso}}
+
+
+def _number(n: float | int) -> dict[str, Any]:
+    return {"number": n}
+
+
+def _select(name: str) -> dict[str, Any]:
+    return {"select": {"name": name}}
+
+
+def _status(name: str) -> dict[str, Any]:
+    return {"status": {"name": name}}
+
+
+# ─── Upsert intent builder (pure) ─────────────────────────────────────
+
+
+# Statuses where the script is allowed to set Status → Done.
+# Per spec: blank, Editing, Record, or already Done.
+_STATUS_OVERWRITABLE = {None, "", "Editing", "Record", "Done"}
+
+
+def _name_for_new_row(media: IGMedia) -> str:
+    """Default title for a CREATE — first line of caption, capped at 80 chars,
+    or a fallback if no caption."""
+    if media.caption:
+        first_line = media.caption.splitlines()[0].strip()
+        if first_line:
+            return first_line[:80]
+    return f"IG {media.short_permalink}"
+
+
+def build_upsert(
+    media: IGMedia,
+    insights: IGInsights | None,
+    existing: NotionRow | None,
+) -> UpsertIntent:
+    """Compute what to write for one IG post. No I/O.
+
+    insights=None means InsightsUnavailableError fired (post too fresh).
+    Identity fields still get written; metric fields are skipped.
+    """
+    props: dict[str, dict] = {}
+    notes: list[str] = []
+
+    # ─── Identity fields (always overwrite) ───────────────────────────
+    props["Caption"] = _rich_text(media.caption or "")
+    if media.thumbnail_url or media.media_url:
+        props["Thumbnail"] = _url(media.thumbnail_url or media.media_url)
+    props["Media Type"] = _select(media.notion_media_type)
+    props["Last Synced"] = _date_iso(
+        datetime.now(timezone.utc).isoformat(timespec="seconds")
+    )
+
+    # ─── Identity fields (write-if-blank) ─────────────────────────────
+    if existing is None or not existing.ig_media_id:
+        props["IG Media ID"] = _rich_text(media.id)
+        if existing is not None and not existing.ig_media_id:
+            notes.append("backfilling IG Media ID")
+    if existing is None or not existing.publication_date:
+        # IG timestamps include tz offset; Notion accepts the ISO datetime as-is
+        props["Publication Date"] = _date_iso(media.timestamp.isoformat())
+    if existing is None or not existing.permalink:
+        props["Link to post"] = _url(media.permalink)
+    if existing is None or not existing.platform:
+        props["Platform"] = _select("Instagram")
+
+    # ─── Status — Done if currently in {blank, Editing, Record, Done} ──
+    if existing is None:
+        props["Status"] = _status("Done")  # new row → Done
+    elif existing.status in _STATUS_OVERWRITABLE and existing.status != "Done":
+        props["Status"] = _status("Done")
+        notes.append(f"status: {existing.status or '∅'} → Done")
+    elif existing.status not in _STATUS_OVERWRITABLE:
+        notes.append(f"status: {existing.status} (protected — left alone)")
+
+    # ─── Metric fields (always overwrite when insights present) ───────
+    if insights is not None:
+        # likes/comments from /media, not /insights
+        props["Likes"] = _number(media.like_count)
+        props["Comments"] = _number(media.comments_count)
+        if insights.reach is not None:
+            props["Reach"] = _number(insights.reach)
+        if insights.views is not None:
+            props["Total views"] = _number(insights.views)
+        if insights.saved is not None:
+            props["Saves"] = _number(insights.saved)
+        if insights.shares is not None:
+            props["Shares"] = _number(insights.shares)
+        if insights.avg_watch_time_s is not None:
+            props["Average Watch Time (s)"] = _number(insights.avg_watch_time_s)
+        if insights.total_watch_time_s is not None:
+            props["Total Watch Time (s)"] = _number(insights.total_watch_time_s)
+    else:
+        notes.append("insights unavailable — identity-only write")
+
+    # ─── New-row only: derive a title ─────────────────────────────────
+    if existing is None:
+        props["Name"] = _title(_name_for_new_row(media))
+
+    return UpsertIntent(
+        media_id=media.id,
+        short_permalink=media.short_permalink,
+        action="CREATE" if existing is None else "UPDATE",
+        page_id=existing.page_id if existing else None,
+        properties=props,
+        notes=notes,
+    )
+
+
+# ─── Upsert apply (side-effecting) ────────────────────────────────────
+
+
+# Notion rate limit is ~3 req/sec; spec says sleep 0.4s between writes.
+NOTION_WRITE_SLEEP = 0.4
+
+
+def apply_upsert(settings: Settings, intent: UpsertIntent) -> str | None:
+    """Execute an upsert against the Notion API.
+
+    Honors settings.DRY_RUN — when true, returns None without making any calls.
+    Otherwise PATCHes for UPDATE or POSTs for CREATE.
+
+    Returns the page_id on success, None on dry-run or skip.
+
+    Sleeps NOTION_WRITE_SLEEP after a successful write to stay under the
+    3 req/sec Notion limit.
+    """
+    if settings.DRY_RUN or intent.action == "SKIP":
+        return None
+
+    headers = _headers(settings)
+
+    if intent.action == "UPDATE":
+        assert intent.page_id, "UPDATE intent must have a page_id"
+        url = f"{settings.notion_api_base}/pages/{intent.page_id}"
+        body = {"properties": intent.properties}
+        try:
+            response = httpx.patch(url, headers=headers, json=body, timeout=HTTP_TIMEOUT)
+        except httpx.RequestError as e:
+            raise NotionAPIError(f"Network error on PATCH: {e}") from e
+        if response.is_error:
+            _raise_from_response(response)
+        time.sleep(NOTION_WRITE_SLEEP)
+        return response.json().get("id")
+
+    if intent.action == "CREATE":
+        url = f"{settings.notion_api_base}/pages"
+        body = {
+            # 2025-09-03 API: parent uses data_source_id for new rows in a data source
+            "parent": {"data_source_id": settings.NOTION_DATA_SOURCE_ID},
+            "properties": intent.properties,
+        }
+        try:
+            response = httpx.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT)
+        except httpx.RequestError as e:
+            raise NotionAPIError(f"Network error on POST: {e}") from e
+        if response.is_error:
+            _raise_from_response(response)
+        time.sleep(NOTION_WRITE_SLEEP)
+        return response.json().get("id")
+
+    return None

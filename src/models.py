@@ -122,3 +122,33 @@ class NotionRow(BaseModel):
     platform: str | None = None  # Instagram / TikTok / YouTube
     publication_date: str | None = None  # ISO date or None
 
+
+UpsertAction = Literal["CREATE", "UPDATE", "SKIP"]
+
+
+class UpsertIntent(BaseModel):
+    """A computed plan to upsert one IG post into Notion.
+
+    Pure data — produced by notion.build_upsert(), consumed by notion.apply_upsert().
+    Separating the decision (intent) from the side effect makes dry-run trivial:
+    just don't call apply_upsert.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    media_id: str
+    short_permalink: str  # for log lines
+
+    action: UpsertAction
+    page_id: str | None = None  # required for UPDATE
+
+    # Notion API property payload, ready to POST/PATCH
+    properties: dict[str, dict] = {}
+
+    # Human-readable summary of conditional decisions made (status bump, ID
+    # backfill, etc.) — surfaces in the dry-run report.
+    notes: list[str] = []
+
+    # If action=SKIP, why
+    skip_reason: str | None = None
+
