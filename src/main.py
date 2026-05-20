@@ -1,10 +1,11 @@
 """Entry point for the ig-sync CLI.
 
-Phase 3 — adds media listing on top of the Phase 2 auth check.
+Phase 7 — adds --limit / --dry-run CLI flags for capping live writes.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import textwrap
 from collections import Counter
@@ -96,13 +97,41 @@ def _print_media_table(media: list[IGMedia]) -> None:
         _print_caption(m.caption)
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="ig-sync",
+        description="Sync Instagram post metrics into the Notion Content database.",
+    )
+    parser.add_argument(
+        "--limit",
+        "-n",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap how many upserts get written (default: no cap). "
+        "Useful for testing — `--limit 1` writes only the first intent.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Force dry-run regardless of DRY_RUN in .env. Computes the plan "
+        "and prints what would be written; never PATCHes/POSTs.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+
     # ─── 1. Config ────────────────────────────────────────────────────
     try:
         settings = get_settings()
     except Exception as e:
         print(f"✖ Config load failed:\n  {e}", file=sys.stderr)
         return 1
+
+    # CLI --dry-run overrides .env's DRY_RUN
+    effective_dry_run = settings.DRY_RUN or args.dry_run
     print("✓ Config loaded")
     _print_config(settings)
     print()
@@ -213,27 +242,43 @@ def main() -> int:
         print(f"  ⚠ {err}", file=sys.stderr)
     print()
 
-    _print_dry_run(intents, settings.DRY_RUN)
+    _print_dry_run(intents, effective_dry_run)
     print()
 
-    # ─── 7. Apply (gated by DRY_RUN) ─────────────────────────────────
-    if settings.DRY_RUN:
-        print("→ DRY_RUN=true — no writes will be performed.")
-        print()
-        print("Phase 6 complete. Set DRY_RUN=false (and add a write cap) for Phase 7.")
+    # ─── 7. Apply (gated by DRY_RUN, capped by --limit) ──────────────
+    if effective_dry_run:
+        reason = "DRY_RUN=true in .env" if settings.DRY_RUN else "--dry-run flag set"
+        print(f"→ Skipping writes ({reason}).")
         return 0
 
-    # Real writes (Phase 7+)
-    print("→ Applying upserts to Notion...")
+    if args.limit is not None and args.limit < len(intents):
+        to_write = intents[: args.limit]
+        print(
+            f"→ Writing {len(to_write)} of {len(intents)} intents to Notion "
+            f"(--limit={args.limit})..."
+        )
+    else:
+        to_write = intents
+        print(f"→ Writing all {len(to_write)} intents to Notion...")
+
+    # Force settings copy with DRY_RUN=False for apply_upsert (CLI override path).
+    # apply_upsert reads settings.DRY_RUN, so when --dry-run is the only switch
+    # we never reach this branch. Pass settings as-is.
     written = errored = 0
-    for intent in intents:
+    for intent in to_write:
         try:
-            apply_upsert(settings, intent)
+            page_id = apply_upsert(settings, intent)
             written += 1
+            print(
+                f"  ✓ {intent.action:<6}  {intent.short_permalink:<30}  "
+                f"page_id={page_id}"
+            )
         except NotionAPIError as e:
             errored += 1
             print(f"  ✖ {intent.short_permalink}: {e}", file=sys.stderr)
-    print(f"✓ Wrote {written}, errors {errored}")
+
+    print()
+    print(f"Result: wrote {written}, errors {errored}, skipped {len(intents) - len(to_write)}")
     return 0 if errored == 0 else 1
 
 
