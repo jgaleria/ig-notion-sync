@@ -7,6 +7,7 @@ Phase 6 — build_upsert() (pure intent computation) + apply_upsert()
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -171,26 +172,44 @@ def extract_row(page: dict[str, Any]) -> NotionRow:
 # ─── Permalink normalization (for matching) ───────────────────────────
 
 
+# IG uses different path prefixes for the same content:
+#   /p/SHORTCODE     — generic post path (what users often paste)
+#   /reel/SHORTCODE  — what the Graph API returns for Reels
+#   /reels/SHORTCODE — older variant
+#   /tv/SHORTCODE    — IGTV (deprecated but URLs still resolve)
+# All point to the same media when the shortcode matches. Canonicalize
+# to just the shortcode so matching is robust against the prefix.
+# Case-sensitive in the capture: shortcodes are case-sensitive on IG.
+_IG_SHORTCODE_RE = re.compile(r"/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)")
+
+
 def normalize_permalink(url: str | None) -> str | None:
     """Canonicalize a permalink for equality matching.
 
-    People type permalinks in Notion any number of ways:
-      https://www.instagram.com/reel/ABC/   ← what IG returns
-      https://instagram.com/reel/ABC
-      instagram.com/reel/ABC/
-      www.instagram.com/reel/ABC
+    Returns `instagram.com/<shortcode>` for any IG post URL regardless of
+    path prefix or formatting. Examples that all collapse to the same key:
 
-    Normalize to host+path, lowercased, no protocol, no `www.`, no trailing slash.
+      https://www.instagram.com/reel/DXvVyMoPbyP/   ← what IG returns
+      https://instagram.com/p/DXvVyMoPbyP            ← what users often paste
+      instagram.com/reels/DXvVyMoPbyP/
+      www.instagram.com/tv/DXvVyMoPbyP
+
+    Non-IG URLs (or anything without a recognizable shortcode) fall back
+    to host+path, lowercased and trimmed.
     """
     if not url:
         return None
-    s = url.strip().lower()
+    s = url.strip()
     parsed = urlparse(s if "://" in s else f"https://{s}")
-    host = (parsed.netloc or "").removeprefix("www.")
-    path = parsed.path.rstrip("/")
+    host = (parsed.netloc or "").removeprefix("www.").lower()
     if not host:
         return None
-    return f"{host}{path}"
+    # Try to extract a shortcode (case-sensitive — IG shortcodes are mixed-case)
+    m = _IG_SHORTCODE_RE.search(parsed.path)
+    if m:
+        return f"{host}/{m.group(1)}"
+    # Fallback: lowercased host + path, no trailing slash
+    return f"{host}{parsed.path.rstrip('/').lower()}"
 
 
 # ─── Property serializers ─────────────────────────────────────────────
