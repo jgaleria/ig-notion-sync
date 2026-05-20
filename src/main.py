@@ -1,16 +1,16 @@
 """Entry point for the ig-sync CLI.
 
-Phase 2 — wires in the IG auth check.
-Subsequent phases will add Notion read, write (dry-run), write (real),
-and the run summary.
+Phase 3 — adds media listing on top of the Phase 2 auth check.
 """
 
 from __future__ import annotations
 
 import sys
+from collections import Counter
 
 from src.config import Settings, get_settings
-from src.instagram import InstagramAPIError, fetch_account_info
+from src.instagram import InstagramAPIError, fetch_account_info, fetch_media
+from src.models import IGMedia
 
 
 def _print_config(settings: Settings) -> None:
@@ -30,7 +30,39 @@ def _print_ig_account(account: dict) -> None:
     print(f"  Legacy IG ID:   {account.get('ig_id')}")
     print(f"  Followers:      {account.get('followers_count')}")
     print(f"  Following:      {account.get('follows_count')}")
-    print(f"  Media count:    {account.get('media_count')}")
+    print(f"  Grid count:     {account.get('media_count')} "
+          "(may be lower than /media — counts grid-visible only)")
+
+
+def _truncate(s: str | None, n: int) -> str:
+    if not s:
+        return ""
+    s = s.replace("\n", " ").strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _print_media_table(media: list[IGMedia]) -> None:
+    counts = Counter(m.media_product_type for m in media)
+    breakdown = ", ".join(f"{k}={v}" for k, v in counts.most_common())
+    print(f"Fetched {len(media)} media items  ({breakdown})")
+    print()
+
+    # Header
+    header = (
+        f"  {'#':>3}  {'Date':<10}  {'Product':<7}  "
+        f"{'IG Type':<14}  {'Notion':<8}  {'Likes':>5}  {'Comm':>5}  "
+        f"{'Permalink':<28}  Caption"
+    )
+    print(header)
+    print("  " + "─" * (len(header) - 2))
+
+    for i, m in enumerate(media, start=1):
+        print(
+            f"  {i:>3}  {m.timestamp.strftime('%Y-%m-%d'):<10}  "
+            f"{m.media_product_type:<7}  {m.media_type:<14}  "
+            f"{m.notion_media_type:<8}  {m.like_count:>5}  {m.comments_count:>5}  "
+            f"{m.short_permalink:<28}  {_truncate(m.caption, 50)}"
+        )
 
 
 def main() -> int:
@@ -55,7 +87,17 @@ def main() -> int:
     _print_ig_account(account)
     print()
 
-    print("Phase 2 complete. Phase 3 will list recent media.")
+    # ─── 3. IG media fetch ────────────────────────────────────────────
+    print(f"→ Fetching recent media (limit={settings.MAX_POSTS})...")
+    try:
+        media = fetch_media(settings)
+    except InstagramAPIError as e:
+        print(f"✖ Media fetch failed:\n  {e}", file=sys.stderr)
+        return 1
+    _print_media_table(media)
+    print()
+
+    print("Phase 3 complete. Phase 4 will fetch per-media insights.")
     return 0
 
 
