@@ -102,3 +102,23 @@ class IGInsights(BaseModel):
         if self.total_watch_time_ms is None:
             return None
         return round(self.total_watch_time_ms / 1000.0, 2)
+
+
+class NotionRow(BaseModel):
+    """Minimal subset of a Notion page used for upsert matching.
+
+    The full page object is huge — we just need the keys we match/upsert against
+    plus the manually-set fields whose values we must preserve.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    page_id: str
+    ig_media_id: str | None = None
+    permalink: str | None = None  # "Link to post" URL column
+    name: str | None = None  # title
+    status: str | None = None  # Done / Editing / Record / Draft / Idea / etc.
+    topics: str | None = None  # Skills / Mindset / Passion / Lifestyle
+    platform: str | None = None  # Instagram / TikTok / YouTube
+    publication_date: str | None = None  # ISO date or None
+

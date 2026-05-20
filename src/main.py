@@ -17,7 +17,13 @@ from src.instagram import (
     fetch_insights,
     fetch_media,
 )
-from src.models import IGInsights, IGMedia
+from src.models import IGInsights, IGMedia, NotionRow
+from src.notion import (
+    NotionAPIError,
+    extract_row,
+    normalize_permalink,
+    query_data_source,
+)
 
 
 def _print_config(settings: Settings) -> None:
@@ -149,8 +155,91 @@ def main() -> int:
         _print_combined(m, insights)
 
     print()
-    print("Phase 4 complete. Phase 5 will query Notion and match against IG posts.")
+
+    # ─── 5. Notion read + match ───────────────────────────────────────
+    print("→ Querying Notion data source (all rows)...")
+    try:
+        pages = query_data_source(settings)
+    except NotionAPIError as e:
+        print(f"✖ Notion query failed:\n  {e}", file=sys.stderr)
+        return 1
+    rows = [extract_row(p) for p in pages]
+    print(f"✓ Fetched {len(rows)} Notion rows")
+    _print_match_diff(media, rows)
+    print()
+
+    print("Phase 5 complete. Phase 6 will do dry-run upsert.")
     return 0
+
+
+def _print_match_diff(media: list[IGMedia], rows: list[NotionRow]) -> None:
+    """Build match indexes from Notion rows, then report what would happen
+    per IG post in Phase 6+. No writes here."""
+    # Build indexes
+    by_ig_id: dict[str, NotionRow] = {}
+    by_link: dict[str, NotionRow] = {}
+    for r in rows:
+        if r.ig_media_id:
+            by_ig_id[r.ig_media_id] = r
+        norm = normalize_permalink(r.permalink)
+        if norm:
+            by_link[norm] = r
+
+    print(
+        f"  Indexes: {len(by_ig_id)} rows have IG Media ID, "
+        f"{len(by_link)} rows have a permalink"
+    )
+    print()
+
+    # Status breakdown for situational awareness
+    status_counts = Counter(r.status or "(blank)" for r in rows)
+    print(f"  Status breakdown across all {len(rows)} rows:")
+    for s, c in sorted(status_counts.items(), key=lambda x: -x[1]):
+        print(f"    {c:>4}  {s}")
+    print()
+
+    # Per-IG-post match
+    header = (
+        f"  {'#':>3}  {'Match':<18}  {'IG Date':<10}  "
+        f"{'Permalink':<30}  Notion row → status / topics"
+    )
+    print(header)
+    print("  " + "─" * (len(header) - 2))
+
+    outcomes: Counter[str] = Counter()
+    for i, m in enumerate(media, start=1):
+        row: NotionRow | None = None
+        outcome: str
+        if m.id in by_ig_id:
+            row = by_ig_id[m.id]
+            outcome = "MATCH (id)"
+        else:
+            norm = normalize_permalink(m.permalink)
+            if norm and norm in by_link:
+                row = by_link[norm]
+                outcome = "MATCH (link+backfill)" if not row.ig_media_id else "MATCH (link)"
+            else:
+                outcome = "NEW (would create)"
+        outcomes[outcome] += 1
+
+        if row:
+            row_summary = (
+                f"{row.name or '(unnamed)'}  →  "
+                f"status={row.status or '∅'}, topics={row.topics or '∅'}"
+            )
+        else:
+            row_summary = "(no existing row)"
+
+        print(
+            f"  {i:>3}  {outcome:<18}  "
+            f"{m.timestamp.strftime('%Y-%m-%d'):<10}  "
+            f"{m.short_permalink:<30}  {row_summary}"
+        )
+
+    print()
+    print("  Match summary:")
+    for outcome, c in outcomes.most_common():
+        print(f"    {c:>3}  {outcome}")
 
 
 def _fmt_num(n: int | float | None, percent: bool = False) -> str:
