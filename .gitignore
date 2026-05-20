@@ -1,0 +1,33 @@
+# Secrets
+.env
+.env.local
+
+# Logs (keep dir, not contents)
+logs/*.json
+logs/*.log
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / venv
+.venv/
+venv/
+.python-version
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
