@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from src.config import Settings
-from src.models import IGMedia
+from src.models import IGInsights, IGMedia
 
 
 HTTP_TIMEOUT = 30.0
@@ -25,9 +25,31 @@ _MEDIA_FIELDS = (
     "thumbnail_url,media_url,timestamp,like_count,comments_count"
 )
 
+# Per-media insights metric lists, by media_product_type.
+#
+# NOTE: `follows` (new followers attributed to a post) used to be available
+# per-media but Meta moved it to the account-level Insights endpoint only.
+# Requesting it here returns code 100 "does not support the follows metric
+# for this media product type." We leave the Notion "New Followers" column
+# blank — fill manually if you track per-post follow attribution another way.
+_REELS_METRICS = (
+    "reach,saved,shares,total_interactions,views,"
+    "ig_reels_avg_watch_time,ig_reels_video_view_total_time"
+)
+_FEED_METRICS = "reach,saved,shares,total_interactions,views"
+
 
 class InstagramAPIError(Exception):
     """Raised when the IG Graph API returns an error or is unreachable."""
+
+
+class InsightsUnavailableError(InstagramAPIError):
+    """Insights not ready or unavailable for a specific media item.
+
+    Common cause: media was published less than ~30 minutes ago, so Meta
+    hasn't computed metrics yet. Caller should skip and let the next run
+    pick it up.
+    """
 
 
 def _raise_from_response(response: httpx.Response) -> None:
@@ -118,3 +140,73 @@ def fetch_media(settings: Settings) -> list[IGMedia]:
     items = payload.get("data", [])
     media = [IGMedia.model_validate(item) for item in items]
     return [m for m in media if m.media_product_type != "STORY"]
+
+
+# ─── Insights ──────────────────────────────────────────────────────────
+
+
+def _flatten_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """IG returns each metric as its own object — flatten to {name: value}.
+
+    Shape: [{name: 'reach', period: 'lifetime', values: [{value: 1234}], ...}]
+    A few metrics use `total_value: {value: N}` instead of `values`.
+    Empty / missing values pass through as None per spec.
+    """
+    out: dict[str, Any] = {}
+    for item in items:
+        name = item.get("name")
+        if not name:
+            continue
+        values = item.get("values")
+        if values and isinstance(values, list) and values[0]:
+            out[name] = values[0].get("value")
+            continue
+        total = item.get("total_value") or {}
+        if "value" in total:
+            out[name] = total["value"]
+    return out
+
+
+def fetch_insights(settings: Settings, media: IGMedia) -> IGInsights:
+    """Fetch per-media insights for a single post.
+
+    One API call — the spec originally called for a second `breakdown=follow_type`
+    request to compute "Views follower %", but Meta removed that breakdown from
+    per-media insights (see models.IGInsights for the full note). The Notion
+    follower% columns are now manual.
+
+    Raises:
+        InsightsUnavailableError: when IG signals insights aren't ready
+            (typical for posts published <30min ago). Caller should skip.
+        InstagramAPIError: any other API failure (auth, network, etc.).
+    """
+    metric_list = _REELS_METRICS if media.media_product_type == "REELS" else _FEED_METRICS
+
+    url = f"{settings.ig_graph_base}/{media.id}/insights"
+    params = {
+        "metric": metric_list,
+        "access_token": settings.IG_ACCESS_TOKEN.get_secret_value(),
+    }
+
+    try:
+        payload = _get(url, params)
+    except InstagramAPIError as e:
+        msg = str(e).lower()
+        if "not available" in msg or "not exist" in msg:
+            raise InsightsUnavailableError(
+                f"Insights not ready for {media.id} ({media.short_permalink}): {e}"
+            ) from e
+        raise
+    metrics = _flatten_metrics(payload.get("data", []))
+
+    return IGInsights(
+        media_id=media.id,
+        reach=metrics.get("reach"),
+        views=metrics.get("views"),
+        saved=metrics.get("saved"),
+        shares=metrics.get("shares"),
+        total_interactions=metrics.get("total_interactions"),
+        follows=metrics.get("follows"),  # always None — kept for shape
+        avg_watch_time_ms=metrics.get("ig_reels_avg_watch_time"),
+        total_watch_time_ms=metrics.get("ig_reels_video_view_total_time"),
+    )
