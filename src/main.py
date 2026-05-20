@@ -6,9 +6,14 @@ Phase 7 — adds --limit / --dry-run CLI flags for capping live writes.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import textwrap
+import time
 from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from src.config import Settings, get_settings
 from src.instagram import (
@@ -120,18 +125,45 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    started_at = datetime.now(timezone.utc)
+    t0 = time.monotonic()
+
+    # Tracked across the run for the final summary + last_run.json
+    summary: dict[str, Any] = {
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "ig_posts_fetched": 0,
+        "notion_rows_total": 0,
+        "intents_total": 0,
+        "intents_update": 0,
+        "intents_create": 0,
+        "insights_skipped": 0,
+        "insights_errors": 0,
+        "backfills_queued": 0,
+        "writes_attempted": 0,
+        "writes_succeeded": 0,
+        "writes_failed": 0,
+        "writes_capped_out": 0,
+        "exit_code": 0,
+    }
 
     # ─── 1. Config ────────────────────────────────────────────────────
     try:
         settings = get_settings()
     except Exception as e:
         print(f"✖ Config load failed:\n  {e}", file=sys.stderr)
+        summary["exit_code"] = 1
+        _finalize(summary, t0, started_at)
         return 1
 
     # CLI --dry-run overrides .env's DRY_RUN
     effective_dry_run = settings.DRY_RUN or args.dry_run
+    summary["dry_run"] = effective_dry_run
+    summary["cli_limit"] = args.limit
     print("✓ Config loaded")
     _print_config(settings)
     print()
@@ -142,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         account = fetch_account_info(settings)
     except InstagramAPIError as e:
         print(f"✖ IG auth check failed:\n  {e}", file=sys.stderr)
+        summary["exit_code"] = 1
+        _finalize(summary, t0, started_at)
         return 1
     print("✓ IG token valid")
     _print_ig_account(account)
@@ -153,12 +187,15 @@ def main(argv: list[str] | None = None) -> int:
         media = fetch_media(settings)
     except InstagramAPIError as e:
         print(f"✖ Media fetch failed:\n  {e}", file=sys.stderr)
+        summary["exit_code"] = 1
+        _finalize(summary, t0, started_at)
         return 1
+    summary["ig_posts_fetched"] = len(media)
     _print_media_table(media)
     print()
 
-    # ─── 4. IG insights — sample one Reel and one carousel ────────────
-    print("→ Fetching insights for sample posts (one per metric branch)...")
+    # ─── 4. Sanity-check insights on one Reel + one Carousel ──────────
+    print("→ Sanity-checking insights API (newest Reel + newest Carousel)...")
     samples: list[IGMedia] = []
     newest_reel = next(
         (m for m in media if m.media_product_type == "REELS"), None
@@ -182,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         except InstagramAPIError as e:
             print(f"  ✖ Insights fetch failed for {m.id}: {e}", file=sys.stderr)
+            summary["exit_code"] = 1
+            _finalize(summary, t0, started_at)
             return 1
         _print_combined(m, insights)
 
@@ -193,8 +232,11 @@ def main(argv: list[str] | None = None) -> int:
         pages = query_data_source(settings)
     except NotionAPIError as e:
         print(f"✖ Notion query failed:\n  {e}", file=sys.stderr)
+        summary["exit_code"] = 1
+        _finalize(summary, t0, started_at)
         return 1
     rows = [extract_row(p) for p in pages]
+    summary["notion_rows_total"] = len(rows)
     print(f"✓ Fetched {len(rows)} Notion rows")
     _print_match_diff(media, rows)
     print()
@@ -233,6 +275,15 @@ def main(argv: list[str] | None = None) -> int:
         # 3. Build intent
         intents.append(build_upsert(m, insights, existing))
 
+    summary["intents_total"] = len(intents)
+    summary["intents_update"] = sum(1 for i in intents if i.action == "UPDATE")
+    summary["intents_create"] = sum(1 for i in intents if i.action == "CREATE")
+    summary["insights_skipped"] = insights_unavailable_count
+    summary["insights_errors"] = len(insights_errors)
+    summary["backfills_queued"] = sum(
+        1 for i in intents if any("backfilling IG Media ID" in n for n in i.notes)
+    )
+
     print(
         f"✓ Computed {len(intents)} intents  "
         f"(insights skipped: {insights_unavailable_count}, "
@@ -249,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     if effective_dry_run:
         reason = "DRY_RUN=true in .env" if settings.DRY_RUN else "--dry-run flag set"
         print(f"→ Skipping writes ({reason}).")
+        _finalize(summary, t0, started_at)
         return 0
 
     if args.limit is not None and args.limit < len(intents):
@@ -261,9 +313,9 @@ def main(argv: list[str] | None = None) -> int:
         to_write = intents
         print(f"→ Writing all {len(to_write)} intents to Notion...")
 
-    # Force settings copy with DRY_RUN=False for apply_upsert (CLI override path).
-    # apply_upsert reads settings.DRY_RUN, so when --dry-run is the only switch
-    # we never reach this branch. Pass settings as-is.
+    summary["writes_attempted"] = len(to_write)
+    summary["writes_capped_out"] = len(intents) - len(to_write)
+
     written = errored = 0
     for intent in to_write:
         try:
@@ -277,9 +329,51 @@ def main(argv: list[str] | None = None) -> int:
             errored += 1
             print(f"  ✖ {intent.short_permalink}: {e}", file=sys.stderr)
 
+    summary["writes_succeeded"] = written
+    summary["writes_failed"] = errored
+    summary["exit_code"] = 0 if errored == 0 else 1
+
+    _finalize(summary, t0, started_at)
+    return summary["exit_code"]
+
+
+def _finalize(summary: dict[str, Any], t0: float, started_at: datetime) -> None:
+    """Print the run summary and write logs/last_run.json. Called from every
+    exit path so the JSON log always reflects the actual outcome."""
+    ended_at = datetime.now(timezone.utc)
+    summary["ended_at"] = ended_at.isoformat(timespec="seconds")
+    summary["duration_s"] = round(time.monotonic() - t0, 2)
+
+    # Console summary (spec format, minus the deprecated pillar/skipped lines)
+    ts = ended_at.strftime("%Y-%m-%d %H:%M:%S UTC")
     print()
-    print(f"Result: wrote {written}, errors {errored}, skipped {len(intents) - len(to_write)}")
-    return 0 if errored == 0 else 1
+    print(f"=== Run Summary @ {ts} ===")
+    print(f"  Fetched:                 {summary.get('ig_posts_fetched', 0)} IG posts")
+    print(f"  Notion rows queried:     {summary.get('notion_rows_total', 0)}")
+    print(f"  Intents — UPDATE:        {summary.get('intents_update', 0)}")
+    print(f"  Intents — CREATE:        {summary.get('intents_create', 0)}")
+    print(f"  Backfilled IG Media IDs: {summary.get('backfills_queued', 0)}")
+    print(f"  Insights not ready:      {summary.get('insights_skipped', 0)}")
+    print(f"  Insights errors:         {summary.get('insights_errors', 0)}")
+    if summary.get("dry_run"):
+        print(f"  Mode:                    DRY-RUN (no writes)")
+    else:
+        print(f"  Writes attempted:        {summary.get('writes_attempted', 0)}")
+        print(f"  Writes succeeded:        {summary.get('writes_succeeded', 0)}")
+        print(f"  Writes failed:           {summary.get('writes_failed', 0)}")
+        if summary.get("writes_capped_out"):
+            print(f"  Skipped by --limit:      {summary['writes_capped_out']}")
+    print(f"  Duration:                {summary['duration_s']}s")
+    print(f"  Exit code:               {summary.get('exit_code', 0)}")
+
+    # JSON log
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = LOG_DIR / "last_run.json"
+        log_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
+        print(f"  Wrote {log_path.relative_to(LOG_DIR.parent)}")
+    except OSError as e:
+        print(f"  ⚠ Could not write last_run.json: {e}", file=sys.stderr)
 
 
 def _print_dry_run(intents: list[UpsertIntent], dry_run: bool) -> None:
