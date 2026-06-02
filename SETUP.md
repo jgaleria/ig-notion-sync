@@ -31,19 +31,28 @@ There are six real steps:
    Claude chat app to read the database and answer questions about your
    performance in plain English.
 
-Before all of that, there's a short **Step 0** where you install Claude Code
-if you want the easy path.
+Before all of that, there's a short **Step 0** where you install an AI
+terminal assistant (Claude Code, Codex CLI, etc.) if you don't already have
+one. Skip Step 0 if your AI tool of choice is already set up.
 
 ---
 
 ## Two ways to follow each step
 
+This guide assumes you already use an AI assistant — **Claude or ChatGPT**
+are the common ones — and have its **terminal version** installed (Claude
+Code, OpenAI's Codex CLI, Gemini CLI, Cursor's agent, etc.). If you don't,
+Step 0 below points you at Claude Code, which is the one this guide was
+tested against. Any of the others will work too — the prompts are plain
+English.
+
 Throughout the guide, anywhere you'd normally run a terminal command you'll
 see two options:
 
-> 🟦 **With Claude Code (recommended if you're not technical):** paste a
-> prompt into Claude and it runs the command for you. You'll just answer
-> questions in plain English.
+> 🟦 **With your AI assistant (recommended if you're not technical):** paste
+> the prompt into Claude Code, Codex CLI, or whichever agentic terminal tool
+> you use. It runs the command for you and you answer questions in plain
+> English.
 >
 > ⬛ **Manual (terminal):** copy-paste the command into your terminal yourself.
 
@@ -77,26 +86,23 @@ terminal is. We'll handle all of that below.
 
 ---
 
-## Step 0 — Install Claude Code (the helper)
+## Step 0 — Install an AI terminal assistant (skip if you already have one)
 
 ### What you're doing and why
 
-Claude Code is a free app from Anthropic that lets you talk to Claude (an AI
-assistant) inside your terminal. Throughout this guide, anywhere there's a
-command to run, you can paste a plain-English prompt to Claude and it will
-run the command for you, explain what happened, and fix problems as they
-come up. If you skip this, you'll need to run terminal commands manually.
+The 🟦 prompts throughout this guide expect an AI assistant that runs
+**in your terminal** and can execute commands for you. If you already use
+one (Claude Code, OpenAI's Codex CLI, Gemini CLI, Cursor's agent, etc.),
+you're done with Step 0 — skip ahead to Step 1.
+
+If you don't have one yet, the rest of this step installs **Claude Code**,
+which is what this guide was written and tested against. ChatGPT/Codex/Gemini
+users can install their equivalent instead — the 🟦 prompts are plain
+English and work the same in any of them, though exact response wording
+and edge-case handling may differ slightly.
 
 **Strongly recommended for non-technical users.** This is the difference
 between "I have to figure out what `cd` means" and "I just answer questions."
-
-> **Using ChatGPT / Codex CLI / another agent instead?** The 🟦 prompts in
-> this guide are just plain English — any comparable agentic terminal tool
-> (OpenAI's Codex CLI, Gemini CLI, Cursor's agent, etc.) can follow them.
-> Substitute the install step below for whichever you prefer. **This guide
-> was written and tested against Claude Code**, so the exact wording of
-> responses, error handling, and edge cases may differ slightly on other
-> tools — but the steps are the same.
 
 ### How to install it
 
