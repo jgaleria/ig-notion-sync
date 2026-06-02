@@ -152,6 +152,13 @@ By the end of this step you'll have **two values written down**:
 2. In the top-right corner of the page, click **Duplicate** → choose your
    workspace.
 3. Open the new database in your workspace.
+4. **Check the columns against the schema table in Option B below.** The
+   template may predate recent script changes — if any column from that table
+   is missing, add it now with the type listed. In particular, confirm
+   `New Followers` and `Skip Rate (%)` exist (both Number); these were added
+   to the script after the template was published, so older copies won't have
+   them. The script can't create columns — if one is missing and Instagram
+   returns a value for it, the row write fails with `validation_error`.
 
 **Option B — Build it manually:**
 
@@ -380,9 +387,9 @@ Some terms you'll see here:
   install Python separately; uv installs the right version automatically the
   first time you run the tool. (Think of it like a self-contained app store
   for Python tools.)
-- **Clone the repo** — "repo" is short for "repository," which is just a
-  folder full of code stored on GitHub. "Cloning" means downloading a copy
-  to your computer.
+- **The tool's code** — a folder of small Python files that does the actual
+  Instagram → Notion work. Claude downloads it for you in one step; you don't
+  need to know where it's coming from or what's inside.
 - **`.env` file** — a plain text file where you put secret values (tokens,
   IDs). The tool reads it at startup. It never leaves your computer.
 
@@ -402,7 +409,7 @@ Phase A — install the tool:
 1. Check if `uv` is installed (`uv --version`). If not, install it:
    - Mac/Linux/WSL: `curl -LsSf https://astral.sh/uv/install.sh | sh`
    - Make sure `uv` is on PATH for this session.
-2. Clone the repo: `git clone <REPO_URL_GOES_HERE> ig-notion-sync`. If the repo URL isn't filled in here, STOP and ask me for it.
+2. Download the tool: `git clone https://github.com/jgaleria/ig-notion-sync.git ig-notion-sync`. Don't explain git to me — just say "downloading the tool."
 3. `cd ig-notion-sync`
 4. `uv sync`
 5. `cp .env.example .env`
@@ -437,9 +444,9 @@ If you'd rather do it yourself, open a terminal:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # Close this terminal window and open a fresh one so `uv` is on your PATH.
 
-# 2) Clone and install
+# 2) Download and install
 cd ~/Documents/Code   # or wherever you keep code; create the folder first if it doesn't exist
-git clone <REPO_URL_GOES_HERE> ig-notion-sync
+git clone https://github.com/jgaleria/ig-notion-sync.git ig-notion-sync
 cd ig-notion-sync
 uv sync           # this installs Python and the tool's dependencies — first run can take a minute
 cp .env.example .env
