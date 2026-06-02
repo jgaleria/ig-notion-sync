@@ -14,7 +14,7 @@ Pillar tagging is done separately via the Notion MCP from the Claude app.
 ## How to use it
 
 ```bash
-cd /Users/jgaleria/Documents/GitHub/social-media/ig-notion-sync
+cd ig-notion-sync
 
 uv run ig-sync                 # live sync — fetch + upsert all
 uv run ig-sync --dry-run       # compute plan + print diff, no writes

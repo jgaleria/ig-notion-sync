@@ -13,8 +13,6 @@ as a PDF) covering prerequisites, Meta dev app, Notion schema, env config,
 first sync, and scheduling. Has two paths at each step: paste-in Claude Code
 prompts (for non-technical users) and equivalent terminal commands.
 
-Need someone to do it for you? Consult: `<CONSULT_BOOKING_URL_GOES_HERE>`.
-
 The rest of this README is the day-to-day operating reference for the script.
 
 ## Stack
