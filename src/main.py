@@ -17,6 +17,7 @@ from typing import Any
 
 from src.config import Settings, get_settings
 from src.instagram import (
+    _KNOWN_UNSUPPORTED,
     InsightsUnavailableError,
     InstagramAPIError,
     fetch_account_info,
@@ -363,6 +364,9 @@ def _finalize(summary: dict[str, Any], t0: float, started_at: datetime) -> None:
         print(f"  Writes failed:           {summary.get('writes_failed', 0)}")
         if summary.get("writes_capped_out"):
             print(f"  Skipped by --limit:      {summary['writes_capped_out']}")
+    if _KNOWN_UNSUPPORTED:
+        print(f"  Metrics auto-dropped:    {', '.join(sorted(_KNOWN_UNSUPPORTED))}  "
+              "(IG account/version does not support — left blank in Notion)")
     print(f"  Duration:                {summary['duration_s']}s")
     print(f"  Exit code:               {summary.get('exit_code', 0)}")
 
@@ -539,13 +543,14 @@ def _print_combined(media: IGMedia, ins: IGInsights) -> None:
     print(f"  │    Saves:                  {_fmt_num(ins.saved)}")
     print(f"  │    Shares:                 {_fmt_num(ins.shares)}")
     print(f"  │    Total interactions:     {_fmt_num(ins.total_interactions)}  (not written to Notion)")
+    print(f"  │    New followers:          {_fmt_num(ins.follows)}")
     if media.media_product_type == "REELS":
+        print(f"  │    Skip rate (%):         {_fmt_num(ins.skip_rate)}")
         print(f"  │    Avg watch time (s):    {_fmt_num(ins.avg_watch_time_s)}")
         print(f"  │    Total watch time (s):  {_fmt_num(ins.total_watch_time_s)}")
     print(f"  │")
-    print(f"  │  ── Not written (Meta deprecated) ──")
-    print(f"  │    New followers:           per-media `follows` removed → leave Notion col blank")
-    print(f"  │    Views follower %:        per-media follow_type breakdown removed → leave blank")
+    print(f"  │  ── Still not exposed by IG API ──")
+    print(f"  │    Views follower %:       per-media follow_type breakdown unavailable")
     print(f"  └─")
 
 

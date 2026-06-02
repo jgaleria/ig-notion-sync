@@ -5,8 +5,8 @@ Context for Claude Code working in this repo. Read this before editing.
 ## What this is
 
 A local Python CLI (`ig-sync`) that pulls Instagram post metrics via the Graph
-API and upserts them into a Notion `Content` database. Personal tool, single user
-(joshbutjim), runs on demand from the terminal.
+API and upserts them into a Notion `Content` database. Personal tool, single user,
+runs on demand from the terminal.
 
 No scheduling, no web service, no AI/LLM dependency in the script itself.
 Pillar tagging is done separately via the Notion MCP from the Claude app.
@@ -81,18 +81,42 @@ After every run:
    we write `0`. The `if insights.X is not None` guards in `build_upsert` enforce
    this.
 
-### Meta-deprecated columns (stay blank, fill manually)
+### Per-metric resilience
 
-Already documented in README + commit `b0fdd62`:
+`fetch_insights` is self-healing: when the API returns code 100 "does not
+support the X metric", the metric is stripped from the request, cached in
+the module-level `_KNOWN_UNSUPPORTED` set for the rest of the run, and the
+call is retried. The corresponding `IGInsights` field stays `None`, which the
+`is not None` guards in `build_upsert` translate into "leave the Notion
+column alone." End-of-run summary prints "Metrics auto-dropped: ..." so you
+can see what got skipped.
 
-- `New Followers` — IG removed per-media `follows` metric
-- `Views follower %` / `Views non-follower %` — IG removed `breakdown=follow_type`
-  from per-media insights
-- `Video Duration (s)` / `Skip Rate (%)` — not in IG Graph API; would need
-  `ffprobe` on `media_url` (out of scope)
+This means metric lists in `instagram.py` are *aspirational* — request everything
+that might work, let the API tell us what doesn't. Adding a newly-released
+metric is a one-line change; no per-account capability detection needed.
 
-If a future Meta API change restores any of these, the place to add them is
-`fetch_insights()` and the corresponding `build_upsert` block.
+### Currently aspirational metrics (may auto-drop)
+
+- **`follows`** (→ Notion `New Followers`) — Meta's docs list it as available
+  per-media, but smaller accounts get code 100. Empirically rejected on
+  this account as of June 2026.
+- **`reels_skip_rate`** (→ Notion `Skip Rate (%)`, REELS only) — added Dec 2025,
+  marked "estimated / in development." Requires Graph API **v22.0+**; the
+  default `IG_GRAPH_API_VERSION=v21.0` will reject it. Bump the env var to
+  `v22.0` (or later) to try it. Verify scale on first success — if Notion
+  shows 0.42 where you expected 42, multiply by 100 in `models.py`.
+
+### Columns that stay blank
+
+- `Views follower %` / `Views non-follower %` — IG still does not expose
+  `breakdown=follow_type` on per-media insights as of June 2026. The split
+  exists only on account-level insights (aggregate, useless per-post). The
+  Instagram dashboard computes this server-side from data the API doesn't return.
+- `Video Duration (s)` — not in IG Graph API; would need `ffprobe` on `media_url`
+  (out of scope).
+
+If a future Meta API change restores `follow_type` for media, add the second
+call in `fetch_insights()` and the corresponding `build_upsert` blocks.
 
 ### Operational gotchas
 

@@ -1,13 +1,16 @@
 """Instagram Graph API client.
 
-Phase 2 — auth check (fetch_account_info).
-Phase 3 — media listing (fetch_media).
-Phase 4 will add per-media insights with REELS vs FEED metric branching
-and the `breakdown=follow_type` call for follower/non-follower split.
+Three public calls:
+  - fetch_account_info — auth/identity probe used at startup
+  - fetch_media        — list recent media (Stories filtered client-side)
+  - fetch_insights     — per-media metrics with REELS/FEED branching, plus
+                         self-healing fallback when the API rejects a metric
+                         (see _KNOWN_UNSUPPORTED for the runtime cache).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -27,16 +30,34 @@ _MEDIA_FIELDS = (
 
 # Per-media insights metric lists, by media_product_type.
 #
-# NOTE: `follows` (new followers attributed to a post) used to be available
-# per-media but Meta moved it to the account-level Insights endpoint only.
-# Requesting it here returns code 100 "does not support the follows metric
-# for this media product type." We leave the Notion "New Followers" column
-# blank — fill manually if you track per-post follow attribution another way.
-_REELS_METRICS = (
-    "reach,saved,shares,total_interactions,views,"
-    "ig_reels_avg_watch_time,ig_reels_video_view_total_time"
+# These are the *aspirational* lists. The API can reject individual metrics
+# with code 100 "does not support the X metric" — this happens when:
+#   - The account is below a tier threshold (`follows` per-media)
+#   - The graph version is too old (`reels_skip_rate` needs v22.0+, was added
+#     Dec 2025; default config is still v21.0)
+#   - The token is missing `instagram_manage_insights`
+#
+# fetch_insights handles rejection gracefully: it strips the offending metric,
+# caches the rejection in `_KNOWN_UNSUPPORTED` to avoid re-trying on every
+# call this run, and retries. The corresponding Notion column then stays at
+# its prior value (per the empty-vs-zero rule).
+#
+# `breakdown=follow_type` (per-post follower vs non-follower view split) is
+# still NOT exposed for media — only at the account level. See models.IGInsights.
+_REELS_METRICS: tuple[str, ...] = (
+    "reach", "saved", "shares", "total_interactions", "views",
+    "follows", "reels_skip_rate",
+    "ig_reels_avg_watch_time", "ig_reels_video_view_total_time",
 )
-_FEED_METRICS = "reach,saved,shares,total_interactions,views"
+_FEED_METRICS: tuple[str, ...] = (
+    "reach", "saved", "shares", "total_interactions", "views", "follows",
+)
+
+# Metrics the API has rejected this process — used to skip them on subsequent
+# calls without re-paying for the error. Reset on each `uv run ig-sync`.
+_KNOWN_UNSUPPORTED: set[str] = set()
+
+_UNSUPPORTED_METRIC_RE = re.compile(r"does not support the (\w+) metric", re.IGNORECASE)
 
 
 class InstagramAPIError(Exception):
@@ -170,33 +191,60 @@ def _flatten_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
 def fetch_insights(settings: Settings, media: IGMedia) -> IGInsights:
     """Fetch per-media insights for a single post.
 
-    One API call — the spec originally called for a second `breakdown=follow_type`
-    request to compute "Views follower %", but Meta removed that breakdown from
-    per-media insights (see models.IGInsights for the full note). The Notion
-    follower% columns are now manual.
+    Resilient to per-metric rejection: if the API returns code 100 "does not
+    support the X metric", X is stripped, cached in `_KNOWN_UNSUPPORTED`, and
+    the call is retried. Up to len(metric_list) retries per call. Metrics that
+    end up dropped just stay None on the returned IGInsights, which means the
+    corresponding Notion column keeps its prior value.
+
+    `breakdown=follow_type` is still not available for media — see
+    models.IGInsights. The Notion `Views follower %` / `Views non-follower %`
+    columns therefore remain manual.
 
     Raises:
         InsightsUnavailableError: when IG signals insights aren't ready
             (typical for posts published <30min ago). Caller should skip.
-        InstagramAPIError: any other API failure (auth, network, etc.).
+        InstagramAPIError: any other API failure (auth, network, all metrics
+            stripped, etc.).
     """
-    metric_list = _REELS_METRICS if media.media_product_type == "REELS" else _FEED_METRICS
+    base = _REELS_METRICS if media.media_product_type == "REELS" else _FEED_METRICS
+    metric_list = [m for m in base if m not in _KNOWN_UNSUPPORTED]
 
     url = f"{settings.ig_graph_base}/{media.id}/insights"
-    params = {
-        "metric": metric_list,
-        "access_token": settings.IG_ACCESS_TOKEN.get_secret_value(),
-    }
+    payload: dict[str, Any] | None = None
 
-    try:
-        payload = _get(url, params)
-    except InstagramAPIError as e:
-        msg = str(e).lower()
-        if "not available" in msg or "not exist" in msg:
-            raise InsightsUnavailableError(
-                f"Insights not ready for {media.id} ({media.short_permalink}): {e}"
-            ) from e
-        raise
+    # Worst case we strip every metric one at a time; cap retries at that.
+    for _ in range(len(metric_list) + 1):
+        if not metric_list:
+            raise InstagramAPIError(
+                f"All insight metrics rejected for {media.id} "
+                f"({media.short_permalink}). Unsupported on this account: "
+                f"{sorted(_KNOWN_UNSUPPORTED)}"
+            )
+        params = {
+            "metric": ",".join(metric_list),
+            "access_token": settings.IG_ACCESS_TOKEN.get_secret_value(),
+        }
+        try:
+            payload = _get(url, params)
+            break
+        except InstagramAPIError as e:
+            msg = str(e)
+            msg_lower = msg.lower()
+            if "not available" in msg_lower or "not exist" in msg_lower:
+                raise InsightsUnavailableError(
+                    f"Insights not ready for {media.id} "
+                    f"({media.short_permalink}): {e}"
+                ) from e
+            m = _UNSUPPORTED_METRIC_RE.search(msg)
+            if m and m.group(1) in metric_list:
+                bad = m.group(1)
+                _KNOWN_UNSUPPORTED.add(bad)
+                metric_list = [x for x in metric_list if x != bad]
+                continue
+            raise
+
+    assert payload is not None  # loop always sets it before break
     metrics = _flatten_metrics(payload.get("data", []))
 
     return IGInsights(
@@ -206,7 +254,8 @@ def fetch_insights(settings: Settings, media: IGMedia) -> IGInsights:
         saved=metrics.get("saved"),
         shares=metrics.get("shares"),
         total_interactions=metrics.get("total_interactions"),
-        follows=metrics.get("follows"),  # always None — kept for shape
+        follows=metrics.get("follows"),
+        skip_rate=metrics.get("reels_skip_rate"),
         avg_watch_time_ms=metrics.get("ig_reels_avg_watch_time"),
         total_watch_time_ms=metrics.get("ig_reels_video_view_total_time"),
     )

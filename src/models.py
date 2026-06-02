@@ -77,17 +77,22 @@ class IGInsights(BaseModel):
     total_interactions: int | None = None  # not written to Notion
     follows: int | None = None  # → Notion "New Followers"
 
-    # REELS only — IG returns milliseconds, we store as-is and convert via property
+    # REELS only
+    skip_rate: float | None = None  # → Notion "Skip Rate (%)" — see scale note below
+    # IG returns watch times in milliseconds, we store as-is and convert via property
     avg_watch_time_ms: float | None = None
     total_watch_time_ms: float | None = None
 
-    # NOTE: `breakdown=follow_type` was removed from per-media insights at some
-    # point during v21–v22. None of `views`, `reach`, `saved`, `shares`, or
-    # `total_interactions` accept it anymore ("Incompatible breakdowns" error).
-    # `follow_type` only exists on account-level insights now, which is aggregate
-    # across the account and useless for per-post attribution. So `Views follower %`
-    # and `Views non-follower %` in Notion stay blank — fill manually if you
-    # care about per-post follower split.
+    # NOTE: `breakdown=follow_type` (per-post views split by follower vs non-follower)
+    # is still NOT exposed for media as of June 2026. None of `views`, `reach`,
+    # `saved`, `shares`, or `total_interactions` accept it ("Incompatible breakdowns").
+    # The split exists only on account-level insights, which is aggregate across the
+    # account and useless for per-post attribution. So `Views follower %` and
+    # `Views non-follower %` in Notion stay blank — fill manually if you care.
+    #
+    # SCALE NOTE: `reels_skip_rate` is described by Meta as "the percentage of views
+    # from people who skipped in the first 3 seconds." It's passed through as-is.
+    # If Notion shows 0.42 where you expected 42, multiply by 100 here.
 
     # ─── Derived (convert ms→s) ───────────────────────────────────────
 
