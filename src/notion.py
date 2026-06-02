@@ -320,6 +320,10 @@ def build_upsert(
             props["Saves"] = _number(insights.saved)
         if insights.shares is not None:
             props["Shares"] = _number(insights.shares)
+        if insights.follows is not None:
+            props["New Followers"] = _number(insights.follows)
+        if insights.skip_rate is not None:
+            props["Skip Rate (%)"] = _number(insights.skip_rate)
         if insights.avg_watch_time_s is not None:
             props["Average Watch Time (s)"] = _number(insights.avg_watch_time_s)
         if insights.total_watch_time_s is not None:

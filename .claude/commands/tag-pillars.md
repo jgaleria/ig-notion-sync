@@ -5,18 +5,23 @@ argument-hint: [optional extra guidance for ambiguous cases]
 
 # Pillar tagging for IG Content database
 
-Read the user's Instagram Content database in Notion and tag any rows where
-the `Topics` field is blank. Requires the Notion MCP server to be connected.
+Template for a Claude Code slash command that classifies Instagram posts into
+your own content pillars via the Notion MCP. **This file is a placeholder** —
+fill in the bracketed sections before using.
+
+The pattern: after `uv run ig-sync` populates Notion rows with captions, run
+this command in the Claude app to auto-tag the `Topics` column. The sync
+script intentionally does no LLM work; classification lives here so the script
+stays dependency-free.
 
 ## Notion target
 
-Use these exact IDs. **Do NOT call any Notion search tool** — fuzzy search
-routinely picks the wrong database under the 2025-09-03 API split, and it
-wastes turns. Hit the data source directly.
+Replace these with your own IDs from the Notion API or your database URL.
+**Do NOT call any Notion search tool** — fuzzy search routinely picks the
+wrong database under the 2025-09-03 API split. Hit the data source directly.
 
-- **Data source ID:** `36a0f072-32ce-83c8-b0b8-07ef840059e5`
-- **Database parent ID:** `ead0f072-32ce-821f-b351-81e7b6c0436d`
-- **Workspace:** Personal Workspace (`joshbutjim`)
+- **Data source ID:** `<YOUR_DATA_SOURCE_ID>`
+- **Database parent ID:** `<YOUR_DATABASE_PARENT_ID>`
 
 Use the Notion MCP fetch tool with the data source ID directly. If your MCP
 exposes a `notion-fetch` or equivalent that takes a URL, you can also pass:
@@ -30,7 +35,7 @@ exposes a `notion-fetch` or equivalent that takes a URL, you can also pass:
 | `IG Media ID` | text | auto (sync script) | Unique key |
 | `Caption` | text | auto (sync script) | **Read this to classify** |
 | `Last Synced` | date | auto | |
-| `Topics` | select | **← THIS IS YOUR TARGET** | Options: Skills / Mindset / Passion / Lifestyle |
+| `Topics` | select | **← THIS IS YOUR TARGET** | Define your own options below |
 | `Status` | status | manual | Do not touch |
 | `Mission` | select | manual | Do not touch |
 | `Intensity` | select | manual | Do not touch |
@@ -38,29 +43,17 @@ exposes a `notion-fetch` or equivalent that takes a URL, you can also pass:
 
 ## Pillar definitions
 
-Classify each caption into EXACTLY ONE of these four options.
-**The exact spelling matters** — Notion select options are case-sensitive.
+Replace this section with your own pillar taxonomy. Each post should fit
+EXACTLY ONE option. **Exact spelling matters** — Notion select options are
+case-sensitive, so match what you've configured in the database.
 
-- **Skills** — software engineering, AI, agentic workflows, Claude Code,
-  BMAD, landing a job, navigating corporate, coaching athletics. The OS
-  applied to craft and career.
+- **`<PILLAR_1>`** — short description of what this pillar covers.
+- **`<PILLAR_2>`** — short description.
+- **`<PILLAR_3>`** — short description.
+- **`<PILLAR_4>`** — short description.
 
-- **Mindset** — multi-genre living, productivity, ethos-aligned action,
-  finite energy, finance at 23, parallels across passions. The OS itself,
-  named and taught.
-
-- **Lifestyle** — hybrid athlete (lifting, running, sports), building in
-  public, launching product, snowboarding, cooking, self-care. The OS
-  applied to body and lived experience.
-
-- **Passion** — faith (following Christ, church, prayer, Bible),
-  relationships (girlfriend, family, teammates, friends). The OS applied
-  to what matters most.
-
-When a caption is ambiguous between two pillars, pick the primary frame
-the caption leans into — the OS being demonstrated, not just the surface
-topic. (e.g. a gym video that's really about "consistency beats waiting"
-is **Mindset**, not Lifestyle.)
+When a caption is ambiguous, prefer the primary frame the caption leans into
+rather than the surface topic.
 
 ## Procedure
 
@@ -74,8 +67,8 @@ is **Mindset**, not Lifestyle.)
    ```
    #   caption snippet (60 chars)                  → proposed pillar
    ────────────────────────────────────────────────────────────────
-   1   product details coming soon                 → Skills
-   2   we've come full circle                      → Mindset
+   1   product details coming soon                 → <PILLAR_1>
+   2   we've come full circle                      → <PILLAR_2>
    ...
    ```
 

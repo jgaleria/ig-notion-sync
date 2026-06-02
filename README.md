@@ -6,6 +6,15 @@ upserts them into a Notion `Content` database. Run on demand from the terminal.
 Pillar tagging is handled separately via Claude in the Notion MCP — the script
 stays a pure data pipeline.
 
+## Setting this up for yourself?
+
+See **[SETUP.md](./SETUP.md)** — a single standalone guide (also distributed
+as a PDF) covering prerequisites, Meta dev app, Notion schema, env config,
+first sync, and scheduling. Has two paths at each step: paste-in Claude Code
+prompts (for non-technical users) and equivalent terminal commands.
+
+The rest of this README is the day-to-day operating reference for the script.
+
 ## Stack
 
 - Python 3.11+ (developed on 3.14)
@@ -83,15 +92,25 @@ ig-notion-sync/
 `Total views`, `Reach`, `Likes`, `Comments`, `Saves`, `Shares`,
 `Average Watch Time (s)` (reels only), `Total Watch Time (s)` (reels only).
 
+### Aspirational — requested, may be dropped if your account/API version rejects
+`New Followers` (IG `follows` metric — many accounts get code 100),
+`Skip Rate (%)` (IG `reels_skip_rate`, REELS only — needs Graph API v22.0+;
+the default `v21.0` will reject it). `fetch_insights` strips any metric the
+API refuses and continues, so a rejection just leaves the column at its
+prior value. The end-of-run summary prints "Metrics auto-dropped: …" when
+this happens. To try skip rate, set `IG_GRAPH_API_VERSION=v22.0` in `.env`.
+
 ### Never overwritten (manual fields)
 `Name` (your title — set during planning), `Topics` (Claude-tag via MCP),
 `Mission`, `Intensity`, `Inspo`.
 
-### Stays blank — IG Graph API limitations (Meta deprecated)
-`New Followers`, `Views follower %`, `Views non-follower %` (formula),
-`Video Duration (s)`, `Skip Rate (%)` (derived).
+### Stays blank — IG Graph API still won't expose
+`Views follower %`, `Views non-follower %` — per-media `breakdown=follow_type`
+is not available (Instagram dashboard computes this server-side from data the
+API doesn't return).
+`Video Duration (s)` — not in IG Graph API; would need `ffprobe`.
 
-Details on these in commit `b0fdd62` (Phase 4).
+See commit `b0fdd62` for the original Phase-4 deprecation context.
 
 ## Token refresh
 
