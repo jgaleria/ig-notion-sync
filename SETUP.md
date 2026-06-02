@@ -90,6 +90,14 @@ come up. If you skip this, you'll need to run terminal commands manually.
 **Strongly recommended for non-technical users.** This is the difference
 between "I have to figure out what `cd` means" and "I just answer questions."
 
+> **Using ChatGPT / Codex CLI / another agent instead?** The 🟦 prompts in
+> this guide are just plain English — any comparable agentic terminal tool
+> (OpenAI's Codex CLI, Gemini CLI, Cursor's agent, etc.) can follow them.
+> Substitute the install step below for whichever you prefer. **This guide
+> was written and tested against Claude Code**, so the exact wording of
+> responses, error handling, and edge cases may differ slightly on other
+> tools — but the steps are the same.
+
 ### How to install it
 
 1. Go to **[https://docs.claude.com/en/docs/claude-code/quickstart](https://docs.claude.com/en/docs/claude-code/quickstart)**
@@ -520,15 +528,17 @@ Open your Notion database — confirm rows appeared with metrics filled in.
 
 ### What you're doing and why
 
-Two things to know about long-term operation:
+Three things to know about long-term operation:
 
 1. **The Instagram token expires every 60 days.** When that happens the tool
    stops working until you refresh it. The refresh is one curl command, and
    Claude can do it for you.
 2. **The tool is one-shot.** It doesn't sit there running — every time you
-   want fresh metrics, you (or a scheduler) have to run it. If you want it
-   automatic, you set up a daily scheduler (Mac, Linux, and Windows each have
-   their own).
+   want fresh metrics, *something* has to kick it off. Day-to-day, that
+   "something" is you asking Claude to run it. See "On-demand sync" below.
+3. **If you'd rather not have to remember**, you can put it on a daily
+   schedule (Mac, Linux, and Windows each have their own). Optional — see
+   "Automated daily schedule" below.
 
 ### Token refresh (every ~60 days)
 
@@ -546,9 +556,39 @@ Your `IG_ACCESS_TOKEN` expires. When it does, the tool exits with
 
 **Set a calendar reminder for day 50** so the token doesn't lapse.
 
-### Schedule it (optional)
+### On-demand sync via Claude Code (recommended)
 
-The tool is one-shot. To run it automatically every day:
+The simplest way to keep your Notion database fresh: **just ask Claude to
+run the sync whenever you want updated numbers** — before doing analytics,
+after posting something new, or whenever you remember.
+
+> ⚠️ **This is a manual step every time.** Claude doesn't run on its own —
+> you have to open Claude Code and paste (or type) the prompt each time you
+> want fresh metrics. If you go a week without asking, your data is a week
+> stale and thumbnail URLs will start 404'ing. If that sounds like you, skip
+> ahead to "Automated daily schedule."
+
+Open Claude Code inside your `ig-notion-sync` folder and paste:
+
+```
+Run ig-notion-sync to refresh my Instagram metrics in Notion.
+
+1. `cd` into the ig-notion-sync folder if we're not already there.
+2. Run `uv run ig-sync`.
+3. Read `logs/last_run.json` and summarize in plain English: how many rows were created vs updated, any errors, and anything that looks off (e.g. a metric that dropped a lot, posts that failed to sync).
+4. If the token is expired (exit code 1 with "Access token rejected"), tell me — don't try to fix it silently.
+```
+
+You can keep that prompt in a note and paste it any time. Or just say
+*"sync my IG metrics"* once Claude knows the project — Claude Code remembers
+context within a session.
+
+### Automated daily schedule (optional)
+
+If you'd rather not have to remember, schedule the sync to run automatically
+once a day. **Trade-off:** set-and-forget, but a silent failure (expired
+token, network blip) can go unnoticed for a while — check `logs/last_run.json`
+or `logs/cron.log` every so often.
 
 > 🟦 **With Claude Code:**
 >
@@ -583,6 +623,14 @@ captions have in common.*
 thing from Claude Code, which is the terminal helper you used in earlier
 steps. For this step you want the regular chat app — in your browser, or
 the Claude desktop or mobile app.)
+
+> **ChatGPT works here too.** This step was written and tested against
+> Claude, but the prompts below are plain English and **Option A (attach a
+> CSV and ask questions)** works identically in ChatGPT — just drop the
+> CSV into a new chat and paste the prompt. **Option B (live Notion
+> connector)** is Claude-specific in this guide; ChatGPT has its own Notion
+> connector with different capabilities, so if you go that route you'll
+> need to adjust the tagging prompt to match what your tool supports.
 
 ### Two ways to give Claude your data
 
