@@ -351,6 +351,43 @@ def build_upsert(
 # Notion rate limit is ~3 req/sec; spec says sleep 0.4s between writes.
 NOTION_WRITE_SLEEP = 0.4
 
+# Transient network failures (timeouts, connection drops) get retried with
+# exponential backoff. 3 attempts total covers the occasional Notion blip
+# without inflating run time when Notion is truly down.
+WRITE_MAX_ATTEMPTS = 3
+WRITE_RETRY_BACKOFF_S = (1.0, 3.0)  # sleep before attempts 2 and 3
+
+
+def _request_with_retry(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json: dict[str, Any],
+) -> httpx.Response:
+    """Send a Notion write, retrying on transient network errors.
+
+    httpx.RequestError covers timeouts, connection resets, DNS failures —
+    the same family of failures that produced the "[Errno 60] Operation
+    timed out" errors. HTTP-level errors (4xx/5xx) are returned to the
+    caller for the normal _raise_from_response path; we do not retry those
+    because they typically indicate a real validation/auth problem.
+    """
+    last_exc: httpx.RequestError | None = None
+    for attempt in range(1, WRITE_MAX_ATTEMPTS + 1):
+        try:
+            return httpx.request(
+                method, url, headers=headers, json=json, timeout=HTTP_TIMEOUT
+            )
+        except httpx.RequestError as e:
+            last_exc = e
+            if attempt < WRITE_MAX_ATTEMPTS:
+                time.sleep(WRITE_RETRY_BACKOFF_S[attempt - 1])
+    assert last_exc is not None
+    raise NotionAPIError(
+        f"Network error on {method} after {WRITE_MAX_ATTEMPTS} attempts: {last_exc}"
+    ) from last_exc
+
 
 def apply_upsert(settings: Settings, intent: UpsertIntent) -> str | None:
     """Execute an upsert against the Notion API.
@@ -361,7 +398,8 @@ def apply_upsert(settings: Settings, intent: UpsertIntent) -> str | None:
     Returns the page_id on success, None on dry-run or skip.
 
     Sleeps NOTION_WRITE_SLEEP after a successful write to stay under the
-    3 req/sec Notion limit.
+    3 req/sec Notion limit. Transient network failures are retried via
+    _request_with_retry — see WRITE_MAX_ATTEMPTS / WRITE_RETRY_BACKOFF_S.
     """
     if settings.DRY_RUN or intent.action == "SKIP":
         return None
@@ -372,10 +410,7 @@ def apply_upsert(settings: Settings, intent: UpsertIntent) -> str | None:
         assert intent.page_id, "UPDATE intent must have a page_id"
         url = f"{settings.notion_api_base}/pages/{intent.page_id}"
         body = {"properties": intent.properties}
-        try:
-            response = httpx.patch(url, headers=headers, json=body, timeout=HTTP_TIMEOUT)
-        except httpx.RequestError as e:
-            raise NotionAPIError(f"Network error on PATCH: {e}") from e
+        response = _request_with_retry("PATCH", url, headers=headers, json=body)
         if response.is_error:
             _raise_from_response(response)
         time.sleep(NOTION_WRITE_SLEEP)
@@ -388,10 +423,7 @@ def apply_upsert(settings: Settings, intent: UpsertIntent) -> str | None:
             "parent": {"data_source_id": settings.NOTION_DATA_SOURCE_ID},
             "properties": intent.properties,
         }
-        try:
-            response = httpx.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT)
-        except httpx.RequestError as e:
-            raise NotionAPIError(f"Network error on POST: {e}") from e
+        response = _request_with_retry("POST", url, headers=headers, json=body)
         if response.is_error:
             _raise_from_response(response)
         time.sleep(NOTION_WRITE_SLEEP)
